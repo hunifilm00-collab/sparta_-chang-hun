@@ -71,7 +71,7 @@ textarea { resize: vertical; }
 .tasks { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .tasks li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
 .tasks li.zero { opacity: 0.6; }
-.task-row { display: grid; grid-template-columns: 1fr 84px auto; gap: 8px; align-items: center; }
+.task-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px 64px auto; gap: 6px; align-items: center; }
 .task-row .del { min-height: 44px; padding: 0 10px; font: inherit; color: var(--err); background: none; border: 0; cursor: pointer; text-decoration: underline; }
 details.more { margin-top: 6px; }
 details.more summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--muted); }
@@ -113,9 +113,6 @@ details.past > summary { min-height: 44px; display: flex; align-items: center; c
 .edit-row .btns { grid-column: 1 / -1; display: flex; gap: 8px; }
 #resetBtn { margin-top: 12px; }
 
-.view-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
-.tab { min-height: 44px; padding: 8px 18px; font: inherit; cursor: pointer; color: var(--primary); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; }
-.tab[aria-pressed="true"] { font-weight: 700; color: var(--primary-text); background: var(--primary); border-color: var(--primary); }
 .cal-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .cal-nav .btn { min-width: 44px; padding: 8px 14px; font-size: 1.2rem; line-height: 1; }
 .cal-title { font-family: var(--display); font-size: 1.3rem; }
@@ -141,11 +138,8 @@ details.past > summary { min-height: 44px; display: flex; align-items: center; c
 .cal-legend .open::before { border-color: var(--accent); }
 .cal-legend .all-done::before { background: var(--primary); border-color: var(--primary); }
 .cal-legend .today::before { box-shadow: 0 0 0 2px var(--accent); border-color: var(--surface); }
-.add-area { margin-bottom: 10px; }
-.add-open { width: 100%; border-style: dashed; }
-.add-form { display: grid; grid-template-columns: 1fr 96px; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
-.add-form .error, .add-form .btns { grid-column: 1 / -1; }
-.add-form .btns { display: flex; gap: 8px; }
+.day.sel { box-shadow: 0 0 0 3px var(--text); }
+.calendar { margin-bottom: 16px; }
 
 dialog { border: 0; border-radius: var(--radius); padding: 18px; max-width: 360px; width: calc(100% - 32px); }
 dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
@@ -155,3 +149,22 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 @media (min-width: 720px) {
   .cards { grid-template-columns: 1fr 1fr; }
 }
+
+.cal-cell { position: relative; }
+.cal-cell .dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px var(--surface); }
+.cal-cell.all-done .dot { box-shadow: 0 0 0 1.5px var(--primary); }
+.cal-legend .edited::before { border-radius: 50%; background: var(--accent); border-color: var(--accent); }
+.edited-tag { color: var(--ok); background: var(--ok-bg); border: 1px solid var(--accent-text); border-radius: 6px; padding: 0 6px; font-size: 0.85rem; white-space: nowrap; }
+h3.sec { font-size: 1rem; margin: 16px 0 8px; color: var(--muted); }
+.overdue { background: var(--warn-bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
+.overdue h3 { margin: 0 0 2px; font-size: 1rem; color: var(--warn); }
+.overdue .block { border-top-color: var(--line); }
+.overdue .from { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.overdue-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 8px; }
+.overdue-actions .btn { padding: 8px 12px; font-size: 0.95rem; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin: 0 0 10px; }
+.panel .btns { display: flex; gap: 8px; margin-top: 10px; }
+.split-rows { display: grid; gap: 6px; margin: 6px 0; }
+.split-row { display: grid; grid-template-columns: 1fr 84px 36px; gap: 8px; align-items: center; }
+.split-row .u { color: var(--muted); }
+.sum { margin: 4px 0 0; font-weight: 600; }

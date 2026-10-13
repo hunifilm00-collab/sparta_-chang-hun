@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>작심삼일</title>
-  <meta name="description" content="밀린 일을 지금 가능한 시간에 맞춰 다시 짜 주는 일정 도구">
+  <meta name="description" content="할 일과 마감일을 적으면 날짜별로 나눠 달력에 정리해 주는 일정 도구">
   <meta name="theme-color" content="#fff8e6">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23fff3d6'/%3E%3Crect x='4' y='4' width='24' height='24' rx='7' fill='%23ff6b35'/%3E%3Ccircle cx='12' cy='14' r='2' fill='%231f2430'/%3E%3Ccircle cx='20' cy='14' r='2' fill='%231f2430'/%3E%3Cpath d='M11 19.5q5 4 10 0' fill='none' stroke='%231f2430' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/YeonSung-subset.woff2" as="font" type="font/woff2" crossorigin>
@@ -29,12 +29,13 @@
 
     <!-- 입력 화면 -->
     <section id="screen-input" aria-labelledby="h-input" hidden>
-      <h2 id="h-input" tabindex="-1">밀린 일, 지금 가능한 시간에 맞춰 다시 짜요</h2>
+      <h2 id="h-input" tabindex="-1">할 일과 마감일을 적어 주세요</h2>
+      <p class="hint">마감까지 날짜별로 나눠 드려요</p>
 
       <div class="field">
-        <label for="taskText">남은 일을 적어 주세요</label>
-        <p class="hint" id="taskHint">한 줄에 하나씩 적고, 끝에 걸리는 시간(분)을 적어요. 예: 2단원 정리 60</p>
-        <textarea id="taskText" rows="5" aria-describedby="taskHint" placeholder="2단원 정리 60&#10;문제집 30쪽 풀기 90&#10;오답 노트 40"></textarea>
+        <label for="taskText">해야 할 일을 적어 주세요</label>
+        <p class="hint" id="taskHint">한 줄에 하나씩 적고, 끝에 분량을 적어요. 예: 문제집 풀기 30쪽</p>
+        <textarea id="taskText" rows="5" aria-describedby="taskHint" placeholder="문제집 풀기 30쪽&#10;토익 LC 5회&#10;2단원 정리"></textarea>
         <button type="button" id="addBtn" class="btn secondary">목록에 추가</button>
       </div>
 
@@ -47,31 +48,24 @@
       <div class="field">
         <label for="finalDeadline">전체 마감일</label>
         <input type="date" id="finalDeadline" aria-describedby="deadlineError">
-        <p id="deadlineError" class="error" role="alert" hidden>마감일은 오늘 이후로 정해 주세요</p>
-      </div>
-
-      <div class="field two">
-        <div>
-          <label for="weekdayMin">평일에 쓸 수 있는 시간(분)</label>
-          <input type="number" id="weekdayMin" min="0" step="5" inputmode="numeric">
-        </div>
-        <div>
-          <label for="weekendMin">주말에 쓸 수 있는 시간(분)</label>
-          <input type="number" id="weekendMin" min="0" step="5" inputmode="numeric">
-        </div>
+        <p id="deadlineError" class="error" role="alert" hidden></p>
       </div>
 
       <p class="privacy">입력한 내용은 이 기기의 브라우저에만 저장돼요. 서버로 보내지 않아요.</p>
       <p id="inputError" class="error" role="alert" hidden></p>
-      <button type="button" id="submitBtn" class="btn">다음으로</button>
+      <button type="button" id="submitBtn" class="btn">일정 나눠 보기</button>
     </section>
 
-    <!-- 비교 화면 -->
-    <section id="screen-compare" aria-labelledby="h-compare" hidden>
-      <h2 id="h-compare" tabindex="-1">어떻게 다시 시작할까요?</h2>
-      <p class="hint">두 방식이 요구하는 시간을 비교해 보고 하나를 골라 주세요.</p>
-      <div id="cards" class="cards"></div>
-      <button type="button" id="compareBack" class="link"></button>
+    <!-- 미리보기 화면 -->
+    <section id="screen-preview" aria-labelledby="h-preview" hidden>
+      <h2 id="h-preview" tabindex="-1">이렇게 진행하면 될까요?</h2>
+      <p id="pvMeta" class="meta"></p>
+      <div id="pvCal"></div>
+      <div id="pvDays"></div>
+      <div class="actions">
+        <button type="button" id="confirmBtn" class="btn">이대로 확정</button>
+        <button type="button" id="pvBack" class="link">입력 고치기</button>
+      </div>
     </section>
 
     <!-- 일정표 화면 -->
@@ -79,25 +73,10 @@
       <h2 id="h-plan" tabindex="-1">일정표</h2>
       <p id="planMeta" class="meta"></p>
       <p id="doneMsg" class="done" role="status" aria-live="polite" hidden><svg class="mascot" viewBox="0 0 28 28" width="28" height="28" aria-hidden="true" focusable="false"><rect width="28" height="28" rx="7" fill="#ff6b35"/><g fill="#1f2430"><circle cx="10" cy="12" r="2"/><circle cx="18" cy="12" r="2"/></g><path d="M9.5 17.5q4.5 3.6 9 0" fill="none" stroke="#1f2430" stroke-width="2" stroke-linecap="round"/></svg><span id="doneText"></span></p>
-      <div class="actions">
-        <button type="button" id="missBtn" class="btn">오늘 못 했어요</button>
-        <button type="button" id="switchBtn" class="link">방식 바꾸기</button>
-      </div>
-      <div class="view-tabs" role="group" aria-label="보기 바꾸기">
-        <button type="button" id="viewList" class="tab" aria-pressed="true">목록</button>
-        <button type="button" id="viewCal" class="tab" aria-pressed="false">달력</button>
-      </div>
-      <div id="days"></div>
-      <div id="calendar" hidden>
-        <div class="cal-nav">
-          <button type="button" id="calPrev" class="btn secondary" aria-label="이전 달">‹</button>
-          <span id="calTitle" class="cal-title" aria-live="polite"></span>
-          <button type="button" id="calNext" class="btn secondary" aria-label="다음 달">›</button>
-        </div>
-        <div id="calGrid" class="cal-grid"></div>
-        <div class="cal-legend" aria-hidden="true"><span class="lg open">할 일</span><span class="lg all-done">한 일</span><span class="lg today">오늘</span></div>
-        <div id="calPanel"></div>
-      </div>
+      <div id="todayBox"></div>
+      <div id="overdueBox"></div>
+      <div id="plCal"></div>
+      <div id="upcoming"></div>
       <button type="button" id="resetBtn" class="btn secondary">새로 시작하기</button>
     </section>
   </main>

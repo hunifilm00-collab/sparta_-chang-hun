@@ -3,28 +3,21 @@
   "use strict";
   var S = window.Scheduler;
 
-  var KEY = "jaksim.v1";
-  var VERSION = 1;
+  var KEY = "jaksim.v2";
+  var OLD_KEY = "jaksim.v1";
+  var VERSION = 2;
   var MAX_TASKS = 50;
   var DEFAULT_DEADLINE_DAYS = 7;
-  var DEFAULT_WEEKDAY = 60;
-  var DEFAULT_WEEKEND = 120;
+  var MAX_DEADLINE_DAYS = 365;
   var WEEK = ["일", "월", "화", "수", "목", "금", "토"];
-  var METHODS = {
-    catchup: { name: "전부 따라잡기", desc: "마감까지 모든 일을 끝내도록 매일 나눠 해요" },
-    fit: { name: "가능한 시간에 맞추기", desc: "매일 쓸 수 있는 시간만큼만 하고, 마감을 넘기면 알려줘요" }
-  };
+  var FULLDAY = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
 
   var state = emptyState();
   var storageOk = true;
-  var compareResult = null;
-  var compareSource = "input";
   var idCounter = 0;
-  var view = "list";
-  var calMonth = null;
-  var selDate = null;
-  var addOpen = false;
-  var FULLDAY = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+  var cals = { pv: { month: null, sel: null }, pl: { month: null, sel: null } };
+  var openPanel = null; // { id, kind: "move" | "split" }
+  var splitDraft = null; // { id, pieces: [{date, amount}] }
 
   function $(id) { return document.getElementById(id); }
 
@@ -43,17 +36,12 @@
     var w = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])).getUTCDay();
     return +p[1] + "월 " + +p[2] + "일(" + WEEK[w] + ")";
   }
-  function fmtMin(m) {
-    if (!m || m <= 0) return "0분";
-    var h = Math.floor(m / 60), r = m % 60;
-    if (h === 0) return r + "분";
-    if (r === 0) return h + "시간";
-    return h + "시간 " + r + "분";
+  function taskOf(id) {
+    return state.tasks.filter(function (t) { return t.id === id; })[0];
   }
-  function roundStep(n) {
-    var v = parseInt(n, 10);
-    if (!(v > 0)) return 0;
-    return Math.ceil(v / S.STEP) * S.STEP;
+  function fmtAmt(b) {
+    var t = taskOf(b.taskId);
+    return b.amount + (t ? t.unit : "");
   }
   function newId() {
     state.tasks.forEach(function (t) {
@@ -104,7 +92,7 @@
     });
   }
 
-  // ---------- 저장 (spec 4-3) ----------
+  // ---------- 저장 (spec 4-4) ----------
   function load() {
     var raw;
     try {
@@ -133,12 +121,12 @@
     }
   }
   function wipe() {
-    try { window.localStorage.removeItem(KEY); } catch (e) { /* 저장소를 못 써도 화면은 계속 동작한다 */ }
+    try { window.localStorage.removeItem(KEY); window.localStorage.removeItem(OLD_KEY); } catch (e) { /* 저장소를 못 써도 화면은 계속 동작한다 */ }
   }
 
   // ---------- 화면 전환 ----------
   function show(name) {
-    ["input", "compare", "plan"].forEach(function (n) { $("screen-" + n).hidden = n !== name; });
+    ["input", "preview", "plan"].forEach(function (n) { $("screen-" + n).hidden = n !== name; });
     var head = $("h-" + name);
     window.scrollTo(0, 0);
     if (head) head.focus();
@@ -147,23 +135,15 @@
   // ---------- 입력 화면 ----------
   function ensureSettings() {
     if (!state.settings) {
-      var t = todayStr();
-      state.settings = {
-        today: t,
-        finalDeadline: S.addDays(t, DEFAULT_DEADLINE_DAYS),
-        weekdayMinutes: DEFAULT_WEEKDAY,
-        weekendMinutes: DEFAULT_WEEKEND,
-        overrides: {}
-      };
+      state.settings = { finalDeadline: S.addDays(todayStr(), DEFAULT_DEADLINE_DAYS) };
     }
   }
 
   function renderInput() {
     ensureSettings();
     $("finalDeadline").min = todayStr();
+    $("finalDeadline").max = S.addDays(todayStr(), MAX_DEADLINE_DAYS);
     $("finalDeadline").value = state.settings.finalDeadline;
-    $("weekdayMin").value = state.settings.weekdayMinutes;
-    $("weekendMin").value = state.settings.weekendMinutes;
     renderTaskList();
     updateSubmit();
   }
@@ -173,15 +153,19 @@
     clear(ul);
     $("emptyMsg").hidden = state.tasks.length > 0;
     state.tasks.forEach(function (task, idx) {
+      var li;
       var title = h("input", { type: "text", value: task.title, "aria-label": "일 제목" });
       title.addEventListener("input", function () { task.title = title.value; saveDraft(); updateSubmit(); });
-      var mins = h("input", { type: "number", min: "0", step: "5", value: String(task.minutes), "aria-label": "걸리는 시간(분)", inputmode: "numeric" });
-      mins.addEventListener("change", function () {
-        task.minutes = roundStep(mins.value);
-        mins.value = String(task.minutes);
-        li.classList.toggle("zero", task.minutes === 0);
+      var amt = h("input", { type: "number", min: "0", step: "1", value: String(task.amount), "aria-label": "분량", inputmode: "numeric" });
+      amt.addEventListener("change", function () {
+        var v = parseInt(amt.value, 10);
+        task.amount = v > 0 ? v : 0;
+        amt.value = String(task.amount);
+        li.classList.toggle("zero", task.amount === 0);
         saveDraft(); updateSubmit();
       });
+      var unit = h("input", { type: "text", value: task.unit, maxlength: "6", "aria-label": "분량 단위(쪽, 회 등)" });
+      unit.addEventListener("input", function () { task.unit = unit.value.trim(); saveDraft(); });
       var del = h("button", { type: "button", class: "del", text: "지우기", "aria-label": (task.title || "이 일") + " 지우기" });
       del.addEventListener("click", function () {
         state.tasks.splice(idx, 1);
@@ -189,24 +173,16 @@
       });
       var dl = h("input", { type: "date", min: todayStr(), "aria-label": "이 일만의 마감일", value: task.deadline || "" });
       dl.addEventListener("change", function () { task.deadline = dl.value || null; saveDraft(); });
-      var pr = h("select", { "aria-label": "중요도" }, [
-        h("option", { value: "1", text: "낮음" }),
-        h("option", { value: "2", text: "보통" }),
-        h("option", { value: "3", text: "높음" })
-      ]);
-      pr.value = String(task.priority || 2);
-      pr.addEventListener("change", function () { task.priority = parseInt(pr.value, 10); saveDraft(); });
-      var li = h("li", { class: task.minutes === 0 ? "zero" : "" }, [
-        h("div", { class: "task-row" }, [title, mins, del]),
+      li = h("li", { class: task.amount === 0 ? "zero" : "" }, [
+        h("div", { class: "task-row" }, [title, amt, unit, del]),
         h("details", { class: "more" }, [
-          h("summary", { text: "마감·중요도" }),
+          h("summary", { text: "이 일만의 마감일" }),
           h("div", { class: "more-body" }, [
-            h("div", {}, [h("label", { class: "small-label", text: "이 일만의 마감일" }), dl]),
-            h("div", {}, [h("label", { class: "small-label", text: "중요도" }), pr])
+            h("div", {}, [h("label", { class: "small-label", text: "마감일(비우면 전체 마감일)" }), dl])
           ])
         ])
       ]);
-      if (task.minutes === 0) li.appendChild(h("p", { class: "hint", text: "0분이라 일정에 넣지 않아요" }));
+      if (task.amount === 0) li.appendChild(h("p", { class: "hint", text: "분량이 0이라 일정에 넣지 않아요" }));
       ul.appendChild(li);
     });
   }
@@ -220,10 +196,6 @@
     ensureSettings();
     var fd = $("finalDeadline").value;
     if (fd) state.settings.finalDeadline = fd;
-    var wd = parseInt($("weekdayMin").value, 10);
-    var we = parseInt($("weekendMin").value, 10);
-    state.settings.weekdayMinutes = wd >= 0 ? wd : 0;
-    state.settings.weekendMinutes = we >= 0 ? we : 0;
   }
 
   function parsedFromText() {
@@ -250,315 +222,217 @@
 
   function deadlineProblem() {
     var v = $("finalDeadline").value;
-    return !v || v < todayStr();
+    var t = todayStr();
+    if (!v || v < t) return "마감일은 오늘 이후로 정해 주세요";
+    if (v > S.addDays(t, MAX_DEADLINE_DAYS)) return "마감일은 오늘부터 " + MAX_DEADLINE_DAYS + "일 안으로 정해 주세요";
+    return "";
   }
 
   function updateSubmit() {
     var hasTasks = state.tasks.length > 0 || parsedFromText().length > 0;
     var bad = deadlineProblem();
+    $("deadlineError").textContent = bad;
     $("deadlineError").hidden = !bad;
-    $("submitBtn").disabled = !hasTasks || bad;
+    $("submitBtn").disabled = !hasTasks || !!bad;
   }
 
   function onSubmit() {
     addFromText();
     readSettings();
-    var usable = state.tasks.filter(function (t) { return t.title.trim() && t.minutes > 0; });
+    var usable = state.tasks.filter(function (t) { return t.title.trim() && t.amount > 0; });
     var err = $("inputError");
     if (!usable.length) {
-      err.textContent = "걸리는 시간이 0분보다 큰 일을 하나 이상 적어 주세요";
+      err.textContent = "분량이 1 이상인 일을 하나 이상 적어 주세요";
       err.hidden = false;
       return;
     }
     err.hidden = true;
     state.tasks = state.tasks.filter(function (t) { return t.title.trim(); });
+    state.tasks.forEach(function (t) { if (!t.unit) t.unit = "개"; });
     showNotice("");
     try {
-      state.settings.today = todayStr();
-      compareResult = S.compare(state.tasks, state.settings);
+      state.plan = S.buildPlan(state.tasks, state.settings, todayStr());
     } catch (e) {
       err.textContent = "일정을 만들지 못했어요. 입력을 확인해 주세요";
       err.hidden = false;
       return;
     }
-    compareSource = "input";
-    state.plan = null;
+    cals.pv.month = null; cals.pv.sel = null;
     save();
-    renderCompare();
-    show("compare");
+    renderPreview();
+    show("preview");
   }
 
-  // ---------- 비교 화면 ----------
-  function renderCompare() {
-    var box = $("cards");
-    clear(box);
-    ["catchup", "fit"].forEach(function (m) {
-      var plan = compareResult[m];
-      var sum = plan.summary;
-      var rows = [
-        ["하루 평균", fmtMin(sum.avgPerDay)],
-        ["가능 시간을 넘는 날", sum.overDays ? sum.overDays + "일 (총 " + fmtMin(sum.overMinutes) + ")" : "없음"],
-        ["마감을 넘기는 일", sum.lateCount ? sum.lateCount + "개" : "없음"],
-        ["끝나는 날", sum.endDate ? fmtDate(sum.endDate) : "-"]
-      ];
-      if (sum.unplacedMinutes > 0) rows.push(["60일 안에 못 끝내는 시간", fmtMin(sum.unplacedMinutes)]);
-      var dl = h("dl", {});
-      rows.forEach(function (r) { dl.appendChild(h("dt", { text: r[0] })); dl.appendChild(h("dd", { text: r[1] })); });
-      var warns = [];
-      if (sum.overDays > 0) warns.push("하루 필요 시간이 가능 시간보다 길어요 (" + sum.overDays + "일, 총 " + fmtMin(sum.overMinutes) + ")");
-      if (sum.lateCount > 0) {
-        var most = Math.max.apply(null, sum.lateTasks.map(function (x) { return x.lateDays; }));
-        warns.push("마감을 최대 " + most + "일 넘기는 일이 " + sum.lateCount + "개 있어요");
-      }
-      if (sum.unplacedMinutes > 0) warns.push("60일 안에 끝나지 않는 " + fmtMin(sum.unplacedMinutes) + "이 남아요");
-      var warnList = warns.length ? h("ul", { class: "warns" }, warns.map(function (w) { return h("li", { text: w }); })) : null;
-      var pick = h("button", { type: "button", class: "btn", text: "이 방식으로 시작" });
-      pick.addEventListener("click", function () { choose(m); });
-      box.appendChild(h("article", { class: "card" }, [
-        h("h3", { text: METHODS[m].name }),
-        h("p", { class: "desc", text: METHODS[m].desc }),
-        dl, warnList, pick
-      ]));
-    });
-    $("compareBack").textContent = compareSource === "plan" ? "일정표로 돌아가기" : "입력 고치기";
+  // ---------- 달력 (spec 6-5) ----------
+  function mountCalendar(prefix, box) {
+    box.appendChild(h("div", { class: "calendar" }, [
+      h("div", { class: "cal-nav" }, [
+        h("button", { type: "button", id: prefix + "Prev", class: "btn secondary", "aria-label": "이전 달", text: "‹" }),
+        h("span", { id: prefix + "Title", class: "cal-title", "aria-live": "polite" }),
+        h("button", { type: "button", id: prefix + "Next", class: "btn secondary", "aria-label": "다음 달", text: "›" })
+      ]),
+      h("div", { id: prefix + "Grid", class: "cal-grid" }),
+      h("div", { class: "cal-legend", "aria-hidden": "true" }, [
+        h("span", { class: "lg open", text: "할 일" }),
+        h("span", { class: "lg all-done", text: "한 일" }),
+        h("span", { class: "lg today", text: "오늘" }),
+        h("span", { class: "lg edited", text: "수정됨" })
+      ]),
+      h("p", { id: prefix + "Hint", class: "hint", role: "status", hidden: true })
+    ]));
+    $(prefix + "Prev").addEventListener("click", function () { moveMonth(prefix, -1); });
+    $(prefix + "Next").addEventListener("click", function () { moveMonth(prefix, 1); });
   }
 
-  function choose(method) {
-    state.plan = compareResult[method];
-    if (!state.createdAt) state.createdAt = new Date().toISOString();
-    save();
-    renderPlan();
-    show("plan");
+  function moveMonth(prefix, delta) {
+    var c = cals[prefix];
+    var p = c.month.split("-");
+    var n = (+p[0]) * 12 + (+p[1] - 1) + delta;
+    c.month = Math.floor(n / 12) + "-" + pad((n % 12) + 1);
+    rerender();
+    $(prefix + (delta < 0 ? "Prev" : "Next")).focus();
   }
 
-  // ---------- 일정표 화면 ----------
-  function renderPlan() {
-    var plan = state.plan;
-    var today = todayStr();
-    var blocks = plan.blocks.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-    var late = {};
-    S.lateTasksOf(blocks, state.tasks, state.settings).forEach(function (x) { late[x.taskId] = x.lateDays; });
-    var titleOf = {};
-    state.tasks.forEach(function (t) { titleOf[t.id] = t.title; });
-
-    var undone = blocks.filter(function (b) { return !b.done; });
-    var lastDate = blocks.length ? blocks[blocks.length - 1].date : null;
-    $("planMeta").textContent = METHODS[plan.method].name + (undone.length && lastDate ? " · 끝나는 날 " + fmtDate(lastDate) : "");
-
-    var todayBlocks = blocks.filter(function (b) { return b.date === today; });
-    var allDone = blocks.length > 0 && undone.length === 0;
-    var msg = $("doneMsg");
-    if (allDone) { $("doneText").textContent = "모든 일을 마쳤어요"; msg.hidden = false; }
-    else if (todayBlocks.length && todayBlocks.every(function (b) { return b.done; })) { $("doneText").textContent = "오늘 몫을 마쳤어요"; msg.hidden = false; }
-    else msg.hidden = true;
-    $("missBtn").disabled = allDone;
-
-    $("viewList").setAttribute("aria-pressed", view === "list" ? "true" : "false");
-    $("viewCal").setAttribute("aria-pressed", view === "cal" ? "true" : "false");
-    $("days").hidden = view !== "list";
-    $("calendar").hidden = view !== "cal";
-    if (view === "cal") { renderCalendar(blocks, today, late, titleOf); return; }
-
-    var box = $("days");
-    clear(box);
-    var groups = [];
-    blocks.forEach(function (b) {
-      var g = groups[groups.length - 1];
-      if (!g || g.date !== b.date) { g = { date: b.date, items: [] }; groups.push(g); }
-      g.items.push(b);
-    });
-    var past = groups.filter(function (g) { return g.date < today; });
-    var rest = groups.filter(function (g) { return g.date >= today; });
-
-    if (past.length) {
-      var pd = h("details", { class: "past" }, [h("summary", { text: "지난 날짜 (" + past.length + "일)" })]);
-      past.forEach(function (g) { pd.appendChild(dayEl(g, today, late, titleOf)); });
-      box.appendChild(pd);
-    }
-    if (!todayBlocks.length && rest.length) {
-      box.appendChild(h("p", { class: "hint", text: "오늘 할 일은 없어요" }));
-    }
-    rest.forEach(function (g) { box.appendChild(dayEl(g, today, late, titleOf)); });
+  function rerender() {
+    if (state.plan && state.plan.status === "draft") renderPreview(); else renderPlan();
   }
 
-
-  // ---------- 달력 보기 (spec 6-6) ----------
-  function fmtCompact(m) {
-    if (m < 60) return m + "분";
-    var hh = Math.floor(m / 60), r = m % 60;
-    return hh + "h" + (r ? pad(r) : "");
-  }
-  function dateParts(str) {
-    var p = str.split("-");
-    return { y: +p[0], m: +p[1], d: +p[2], w: new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])).getUTCDay() };
-  }
-
-  function renderCalendar(blocks, today, late, titleOf) {
-    if (!selDate) selDate = today;
-    if (!calMonth) calMonth = selDate.slice(0, 7);
+  function renderCalendar(prefix, blocks, today) {
+    var c = cals[prefix];
+    if (!c.month) c.month = (c.sel || today).slice(0, 7);
     var by = {};
     blocks.forEach(function (b) { (by[b.date] = by[b.date] || []).push(b); });
-    var p = calMonth.split("-");
+    var p = c.month.split("-");
     var y = +p[0], m = +p[1];
-    $("calTitle").textContent = y + "년 " + m + "월";
+    $(prefix + "Title").textContent = y + "년 " + m + "월";
     var firstW = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
     var dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
 
-    var grid = $("calGrid");
+    var grid = $(prefix + "Grid");
     clear(grid);
     WEEK.forEach(function (w, i) {
       grid.appendChild(h("span", { class: "cal-wd" + (i === 0 ? " sun" : ""), text: w, "aria-hidden": "true" }));
     });
-    var i;
-    for (i = 0; i < firstW; i++) grid.appendChild(h("span", { class: "cal-empty", "aria-hidden": "true" }));
+    for (var i = 0; i < firstW; i++) grid.appendChild(h("span", { class: "cal-empty", "aria-hidden": "true" }));
     for (var d = 1; d <= dim; d++) {
       (function (day) {
         var date = y + "-" + pad(m) + "-" + pad(day);
         var items = by[date] || [];
-        var total = items.reduce(function (s2, b) { return s2 + b.minutes; }, 0);
         var undone = items.filter(function (b) { return !b.done; }).length;
+        var edited = items.some(function (b) { return b.edited; });
         var cls = "cal-cell" + (items.length ? (undone ? " open" : " all-done") : "") +
-          (date === today ? " today" : "") + (date === selDate ? " sel" : "");
+          (date === today ? " today" : "") + (date === c.sel ? " sel" : "") + (edited ? " has-edit" : "");
         var label = m + "월 " + day + "일 " + FULLDAY[(firstW + day - 1) % 7];
         if (date === today) label += ", 오늘";
         label += items.length
-          ? ", 합계 " + fmtMin(total) + ", " + (undone ? "할 일 " + undone + "개" : "완료")
+          ? ", " + (undone ? "할 일 " + undone + "건" : "완료") + (edited ? ", 수정됨 포함" : "")
           : ", 일정 없음";
-        var btn = h("button", { type: "button", class: cls, id: "cal-" + date, "aria-pressed": date === selDate ? "true" : "false", "aria-label": label }, [
+        var btn = h("button", { type: "button", class: cls, id: prefix + "-cal-" + date, "aria-pressed": date === c.sel ? "true" : "false", "aria-label": label }, [
           h("span", { class: "num", text: String(day) }),
-          items.length ? h("span", { class: "chip", text: fmtCompact(total) }) : null
+          items.length ? h("span", { class: "chip", text: items.length + "건" }) : null,
+          edited ? h("span", { class: "dot", "aria-hidden": "true" }) : null
         ]);
-        btn.addEventListener("click", function () {
-          selDate = date; addOpen = false;
-          renderPlan();
-          var again = $("cal-" + date);
-          if (again) again.focus();
-        });
+        btn.addEventListener("click", function () { pickDate(prefix, date, items, today); });
         grid.appendChild(btn);
       })(d);
     }
-
-    // 선택한 날 패널
-    var panel = $("calPanel");
-    clear(panel);
-    var sel = by[selDate] || [];
-    if (selDate.slice(0, 7) === calMonth || sel.length) {
-      if (sel.length) {
-        panel.appendChild(dayEl({ date: selDate, items: sel }, today, late, titleOf));
-      } else {
-        panel.appendChild(h("section", { class: "day" + (selDate === today ? " today" : "") }, [
-          h("h3", {}, [fmtDate(selDate), selDate === today ? h("span", { class: "tag", text: "오늘" }) : null]),
-          h("p", { class: "hint", text: "이 날은 일정이 없어요" })
-        ]));
-      }
-    }
-    if (selDate >= today) panel.appendChild(addArea(selDate));
   }
 
-  function addArea(date) {
-    var wrap = h("div", { class: "add-area" });
-    if (!addOpen) {
-      var open = h("button", { type: "button", class: "btn secondary add-open", text: "이 날에 일 추가" });
-      open.addEventListener("click", function () {
-        addOpen = true; renderPlan();
-        var t = $("addTitle"); if (t) t.focus();
-      });
-      wrap.appendChild(open);
-      return wrap;
+  // 달력의 날짜를 누르면 아래 목록의 그날 묶음으로 옮겨 간다
+  function pickDate(prefix, date, items, today) {
+    cals[prefix].sel = date;
+    rerender();
+    var hint = $(prefix + "Hint");
+    if (!items.length) {
+      hint.textContent = fmtDate(date) + "은 일정이 없어요";
+      hint.hidden = false;
+      var cell = $(prefix + "-cal-" + date);
+      if (cell) cell.focus();
+      return;
     }
-    var title = h("input", { type: "text", id: "addTitle", maxlength: "80", autocomplete: "off" });
-    var mins = h("input", { type: "number", id: "addMin", min: "5", step: "5", value: "30", inputmode: "numeric" });
-    var err = h("p", { class: "error", role: "alert", hidden: true });
-    var ok = h("button", { type: "button", class: "btn", text: "추가" });
-    var no = h("button", { type: "button", class: "btn secondary", text: "취소" });
-    wrap.appendChild(h("div", { class: "add-form" }, [
-      h("div", {}, [h("label", { for: "addTitle", text: fmtDate(date) + "에 할 일" }), title]),
-      h("div", {}, [h("label", { for: "addMin", text: "시간(분)" }), mins]),
-      err,
-      h("div", { class: "btns" }, [ok, no])
-    ]));
-    no.addEventListener("click", function () { addOpen = false; renderPlan(); });
-    function submit() {
-      var msg = addManual(date, title.value, mins.value);
-      if (msg) { err.textContent = msg; err.hidden = false; return; }
-      addOpen = false;
-      renderPlan();
-    }
-    ok.addEventListener("click", submit);
-    [title, mins].forEach(function (el) {
-      el.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+    hint.hidden = true;
+    var undone = items.some(function (b) { return !b.done; });
+    var group = $(prefix + "-day-" + date);
+    if (!group && date < today && undone) group = $("pl-overdue");
+    if (!group) return;
+    var past = group.closest("details.past");
+    if (past) past.open = true;
+    var head = group.querySelector("h3");
+    if (head) { head.setAttribute("tabindex", "-1"); head.focus(); }
+    group.scrollIntoView({ block: "start" });
+  }
+
+  // ---------- 일 줄 (spec 6-3, 6-4) ----------
+  function groupByDate(blocks) {
+    var sorted = blocks.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : 1); });
+    var groups = [];
+    sorted.forEach(function (b) {
+      var g = groups[groups.length - 1];
+      if (!g || g.date !== b.date) { g = { date: b.date, items: [] }; groups.push(g); }
+      g.items.push(b);
     });
-    return wrap;
+    return groups;
   }
 
-  // 오류 문구를 돌려주고, 잘 추가하면 빈 값을 돌려준다
-  function addManual(date, title, minutesRaw) {
-    title = String(title || "").trim();
-    if (!title) return "일 이름을 적어 주세요";
-    if (state.tasks.length >= MAX_TASKS) return "일은 최대 " + MAX_TASKS + "개까지 넣을 수 있어요";
-    var mm = String(minutesRaw).trim() === "" ? 30 : roundStep(minutesRaw);
-    if (mm < S.STEP) mm = S.STEP;
-    var task = { id: newId(), title: title, minutes: mm, deadline: date, priority: 2 };
-    state.tasks.push(task);
-    state.plan.blocks.push({ id: task.id + "_" + date, taskId: task.id, date: date, minutes: mm, done: false });
-    save();
-    return "";
-  }
-
-  function moveMonth(delta) {
-    var p = calMonth.split("-");
-    var n = (+p[0]) * 12 + (+p[1] - 1) + delta;
-    calMonth = Math.floor(n / 12) + "-" + pad((n % 12) + 1);
-    renderPlan();
-  }
-
-  function dayEl(g, today, late, titleOf) {
-    var total = g.items.reduce(function (s, b) { return s + b.minutes; }, 0);
+  function dayEl(g, ctx) {
     var head = h("h3", {}, [
       fmtDate(g.date),
-      g.date === today ? h("span", { class: "tag", text: "오늘" }) : null,
-      h("span", { class: "total", text: fmtMin(total) })
+      g.date === ctx.today ? h("span", { class: "tag", text: "오늘" }) : null
     ]);
     var ul = h("ul", { class: "blocks" });
-    g.items.forEach(function (b) { ul.appendChild(blockEl(b, late, titleOf)); });
-    return h("section", { class: "day" + (g.date === today ? " today" : "") }, [head, ul]);
+    g.items.forEach(function (b) { ul.appendChild(blockEl(b, ctx)); });
+    var cal = cals[ctx.prefix];
+    return h("section", { id: ctx.prefix + "-day-" + g.date, class: "day" + (g.date === ctx.today ? " today" : "") + (g.date === cal.sel ? " sel" : "") }, [head, ul]);
   }
 
-  function blockEl(b, late, titleOf) {
-    var title = titleOf[b.taskId] || "(이름 없는 일)";
-    var cb = h("input", { type: "checkbox", "aria-label": title + " " + fmtDate(b.date) + " " + fmtMin(b.minutes) });
-    cb.checked = !!b.done;
-    cb.addEventListener("change", function () { b.done = cb.checked; save(); renderPlan(); });
+  function blockEl(b, ctx) {
+    var task = taskOf(b.taskId);
+    var title = task ? task.title : "(이름 없는 일)";
+    var late = S.lateDays(b, task, state.settings.finalDeadline, state.plan.startDate);
+    var lead;
+    if (ctx.draft) {
+      lead = h("span", { class: "check" }, [h("span", { class: "title", text: title })]);
+    } else {
+      var cb = h("input", { type: "checkbox", "aria-label": title + " " + fmtDate(b.date) + " " + fmtAmt(b) });
+      cb.checked = !!b.done;
+      cb.addEventListener("change", function () { b.done = cb.checked; save(); renderPlan(); });
+      lead = h("label", { class: "check" }, [cb, h("span", { class: "title", text: title })]);
+    }
     var editBtn = h("button", { type: "button", class: "link", text: "고치기", "aria-label": title + " 고치기" });
     var row = h("div", { class: "block-row" }, [
-      h("label", { class: "check" }, [cb, h("span", { class: "title", text: title })]),
-      h("span", { class: "mins", text: fmtMin(b.minutes) }),
-      late[b.taskId] ? h("span", { class: "late", text: "마감 " + late[b.taskId] + "일 초과" }) : null,
-      editBtn
+      lead,
+      h("span", { class: "mins", text: fmtAmt(b) }),
+      b.edited ? h("span", { class: "edited-tag", text: "수정됨" }) : null,
+      late ? h("span", { class: "late", text: "마감 " + late + "일 초과" }) : null,
+      ctx.overdue ? null : editBtn
     ]);
     var li = h("li", { class: "block" + (b.done ? " done" : "") }, [row]);
+    if (ctx.overdue) return li;
 
     editBtn.addEventListener("click", function () {
       if (li.querySelector(".edit-row")) return;
-      var d = h("input", { type: "date", value: b.date, "aria-label": "옮길 날짜" });
-      var m = h("input", { type: "number", min: "5", step: "5", value: String(b.minutes), "aria-label": "시간(분)", inputmode: "numeric" });
+      var d = h("input", { type: "date", value: b.date, min: ctx.today, "aria-label": "옮길 날짜" });
+      var m = h("input", { type: "number", min: "1", step: "1", value: String(b.amount), "aria-label": "분량", inputmode: "numeric" });
       var ok = h("button", { type: "button", class: "btn", text: "저장" });
       var no = h("button", { type: "button", class: "btn secondary", text: "취소" });
       var edit = h("div", { class: "edit-row" }, [
         h("div", {}, [h("label", { class: "small-label", text: "날짜" }), d]),
-        h("div", {}, [h("label", { class: "small-label", text: "시간(분)" }), m]),
+        h("div", {}, [h("label", { class: "small-label", text: "분량" + (task && task.unit ? "(" + task.unit + ")" : "") }), m]),
         h("div", { class: "btns" }, [ok, no])
       ]);
-      no.addEventListener("click", function () { renderPlan(); });
+      no.addEventListener("click", function () { ctx.rerender(); });
       ok.addEventListener("click", function () {
-        var nm = roundStep(m.value);
-        if (!d.value || nm < S.STEP) return;
-        var task = state.tasks.filter(function (t) { return t.id === b.taskId; })[0];
-        if (task) task.minutes = Math.max(S.STEP, task.minutes + (nm - b.minutes));
-        b.date = d.value;
-        b.minutes = nm;
+        var nm = parseInt(m.value, 10);
+        if (!d.value || !(nm >= 1)) return;
+        if (d.value < ctx.today && d.value !== b.date) return;
+        var changed = d.value !== b.date || nm !== b.amount;
+        if (task) task.amount = Math.max(1, task.amount + (nm - b.amount));
+        b.amount = nm;
+        if (changed && !ctx.draft) b.edited = true;
+        state.plan.blocks = S.moveBlock(state.plan.blocks, b.id, d.value, !ctx.draft && changed);
+        if (ctx.draft && changed) state.plan.dirty = true;
         save();
-        renderPlan();
+        ctx.rerender();
       });
       li.appendChild(edit);
       d.focus();
@@ -566,44 +440,195 @@
     return li;
   }
 
-  // ---------- 일정표의 버튼 ----------
-  function onMiss() {
-    confirmDialog("오늘 못 한 일을 내일부터 다시 배치할까요?", "다시 배치").then(function (ok) {
-      if (!ok) return;
-      try {
-        state.plan = S.reschedule(state.plan, state.tasks, state.settings, S.addDays(todayStr(), 1));
-      } catch (e) {
-        showNotice("일정을 만들지 못했어요. 입력을 확인해 주세요");
-        return;
+  // ---------- 미리보기 화면 (spec 6-3) ----------
+  function renderPreview() {
+    var plan = state.plan;
+    var today = todayStr();
+    var blocks = plan.blocks;
+    var last = blocks.reduce(function (mx, b) { return b.date > mx ? b.date : mx; }, plan.startDate);
+    $("pvMeta").textContent = fmtDate(plan.startDate) + "부터 " + fmtDate(last) + "까지 나눈 일정이에요. 고칠 곳이 있으면 고친 뒤 확정해 주세요.";
+    renderCalendar("pv", blocks, today);
+    var ctx = { draft: true, prefix: "pv", today: today, rerender: renderPreview };
+    var box = $("pvDays");
+    clear(box);
+    groupByDate(blocks).forEach(function (g) { box.appendChild(dayEl(g, ctx)); });
+  }
+
+  function onConfirm() {
+    state.plan.status = "confirmed";
+    delete state.plan.dirty;
+    if (!state.createdAt) state.createdAt = new Date().toISOString();
+    cals.pl.month = null; cals.pl.sel = null;
+    openPanel = null; splitDraft = null;
+    save();
+    renderPlan();
+    show("plan");
+  }
+
+  function onPreviewBack() {
+    function go() {
+      state.plan = null;
+      save();
+      renderInput();
+      show("input");
+    }
+    if (state.plan && state.plan.dirty) {
+      confirmDialog("고친 내용이 사라져요. 입력 화면으로 갈까요?", "입력 화면으로").then(function (ok) { if (ok) go(); });
+    } else go();
+  }
+
+  // ---------- 일정표 화면 (spec 6-4) ----------
+  function renderPlan() {
+    var plan = state.plan;
+    var today = todayStr();
+    var blocks = plan.blocks;
+    var st = S.todayStatus(blocks, today);
+    var undone = blocks.filter(function (b) { return !b.done; });
+    var lastUndone = undone.reduce(function (mx, b) { return b.date > mx ? b.date : mx; }, "");
+    $("planMeta").textContent = lastUndone ? "끝나는 날 " + fmtDate(lastUndone) : "";
+
+    var msg = $("doneMsg");
+    if (st.allDone) { $("doneText").textContent = "모든 일을 마쳤어요"; msg.hidden = false; }
+    else if (st.todayDone) { $("doneText").textContent = "오늘 몫을 마쳤어요"; msg.hidden = false; }
+    else msg.hidden = true;
+
+    var ctx = { draft: false, prefix: "pl", today: today, rerender: renderPlan };
+
+    // 오늘 할 일
+    var tbox = $("todayBox");
+    clear(tbox);
+    var todayItems = blocks.filter(function (b) { return b.date === today; });
+    var thead = h("h3", {}, [
+      "오늘 · " + fmtDate(today),
+      h("span", { class: "total", text: st.total ? st.done + " / " + st.total + " 완료" : "" })
+    ]);
+    var tsec = h("section", { id: "pl-day-" + today, class: "day today" + (cals.pl.sel === today ? " sel" : "") }, [thead]);
+    if (todayItems.length) {
+      var ul = h("ul", { class: "blocks" });
+      todayItems.forEach(function (b) { ul.appendChild(blockEl(b, ctx)); });
+      tsec.appendChild(ul);
+    } else {
+      tsec.appendChild(h("p", { class: "hint", text: "오늘 할 일은 없어요" }));
+    }
+    tbox.appendChild(tsec);
+
+    // 밀린 일
+    renderOverdue(blocks, today);
+
+    renderCalendar("pl", blocks, today);
+
+    // 앞으로 일정과 지난 날짜
+    var up = $("upcoming");
+    clear(up);
+    var groups = groupByDate(blocks);
+    var future = groups.filter(function (g) { return g.date > today; });
+    var pastDone = groupByDate(blocks.filter(function (b) { return b.date < today && b.done; }));
+    if (future.length) {
+      up.appendChild(h("h3", { class: "sec", text: "앞으로 일정" }));
+      future.forEach(function (g) { up.appendChild(dayEl(g, ctx)); });
+    }
+    if (pastDone.length) {
+      var pd = h("details", { class: "past" }, [h("summary", { text: "지난 날짜에 끝낸 일 (" + pastDone.length + "일)" })]);
+      pastDone.forEach(function (g) { pd.appendChild(dayEl(g, ctx)); });
+      up.appendChild(pd);
+    }
+  }
+
+  function renderOverdue(blocks, today) {
+    var box = $("overdueBox");
+    clear(box);
+    var list = S.overdueBlocks(blocks, today);
+    if (!list.length) { openPanel = null; splitDraft = null; return; }
+    var sec = h("section", { id: "pl-overdue", class: "overdue" }, [
+      h("h3", { text: "밀린 일 (" + list.length + ")" }),
+      h("p", { class: "hint", text: "오늘 전에 끝내지 못한 일이에요. 어떻게 할지 골라 주세요." })
+    ]);
+    var ul = h("ul", { class: "blocks" });
+    list.forEach(function (b) {
+      var task = taskOf(b.taskId);
+      var li = blockEl(b, { draft: false, prefix: "pl", today: today, overdue: true, rerender: renderPlan });
+      li.querySelector(".block-row").appendChild(h("span", { class: "from", text: fmtDate(b.date) + " 몫" }));
+      var proposal = S.splitProposal(b, task, state.settings.finalDeadline, today, state.plan.startDate);
+      var moveBtn = h("button", { type: "button", class: "btn secondary", text: "다른 날로 옮기기", "aria-label": (task ? task.title : "이 일") + " 다른 날로 옮기기" });
+      var splitBtn = h("button", { type: "button", class: "btn secondary", text: "쪼개서 나누기", "aria-label": (task ? task.title : "이 일") + " 쪼개서 나누기" });
+      if (!proposal.ok) splitBtn.disabled = true;
+      var acts = h("div", { class: "overdue-actions" }, [moveBtn, splitBtn]);
+      li.appendChild(acts);
+      if (!proposal.ok) {
+        var why = proposal.reason === "tooSmall" ? "분량이 1이라 더 나눌 수 없어요. 다른 날로 옮겨 주세요."
+          : proposal.reason === "noDays" ? "마감일이 지나서 나눌 날이 없어요. 다른 날로 옮겨 주세요."
+          : "나눌 수 있는 날이 하루뿐이에요. 다른 날로 옮겨 주세요.";
+        li.appendChild(h("p", { class: "hint", text: why }));
       }
-      showNotice("");
+      moveBtn.addEventListener("click", function () { openPanel = { id: b.id, kind: "move" }; splitDraft = null; renderPlan(); var d = $("moveDate"); if (d) d.focus(); });
+      splitBtn.addEventListener("click", function () {
+        openPanel = { id: b.id, kind: "split" };
+        splitDraft = { id: b.id, pieces: proposal.pieces.map(function (p) { return { date: p.date, amount: p.amount }; }) };
+        renderPlan();
+        var first = $("splitAmt0"); if (first) first.focus();
+      });
+      if (openPanel && openPanel.id === b.id) {
+        li.appendChild(openPanel.kind === "move" ? movePanel(b, today) : splitPanel(b, today));
+      }
+      ul.appendChild(li);
+    });
+    sec.appendChild(ul);
+    box.appendChild(sec);
+  }
+
+  function movePanel(b, today) {
+    var d = h("input", { type: "date", id: "moveDate", min: today, value: today, "aria-label": "옮길 날짜" });
+    var ok = h("button", { type: "button", class: "btn", text: "옮기기" });
+    var no = h("button", { type: "button", class: "btn secondary", text: "취소" });
+    ok.addEventListener("click", function () {
+      if (!d.value || d.value < today) return;
+      state.plan.blocks = S.moveBlock(state.plan.blocks, b.id, d.value, true);
+      openPanel = null;
       save();
       renderPlan();
     });
+    no.addEventListener("click", function () { openPanel = null; renderPlan(); });
+    return h("div", { class: "panel" }, [
+      h("label", { class: "small-label", for: "moveDate", text: "옮길 날짜" }), d,
+      h("div", { class: "btns" }, [ok, no])
+    ]);
   }
 
-  function onSwitch() {
-    confirmDialog("완료한 일은 그대로 두고 남은 일을 새 방식으로 다시 배치해요", "비교 화면으로").then(function (ok) {
-      if (!ok) return;
-      try {
-        state.settings.today = todayStr();
-        compareResult = {
-          catchup: S.reschedule({ method: "catchup", blocks: state.plan.blocks }, state.tasks, state.settings, state.settings.today),
-          fit: S.reschedule({ method: "fit", blocks: state.plan.blocks }, state.tasks, state.settings, state.settings.today)
-        };
-      } catch (e) {
-        showNotice("일정을 만들지 못했어요. 입력을 확인해 주세요");
-        return;
-      }
-      if (compareResult.catchup.summary.totalMinutes === 0) {
-        showNotice("남은 일이 없어요");
-        return;
-      }
-      showNotice("");
-      compareSource = "plan";
-      renderCompare();
-      show("compare");
+  function splitPanel(b, today) {
+    var task = taskOf(b.taskId);
+    var unit = task ? task.unit : "";
+    var rows = h("div", { class: "split-rows" });
+    var sumEl = h("p", { class: "sum", role: "status" });
+    var ok = h("button", { type: "button", class: "btn", text: "이대로 나누기" });
+    var no = h("button", { type: "button", class: "btn secondary", text: "취소" });
+    function refresh() {
+      var sum = splitDraft.pieces.reduce(function (s2, p) { return s2 + p.amount; }, 0);
+      sumEl.textContent = "합계 " + sum + " / " + b.amount + unit + (sum === b.amount ? "" : " (합이 같아야 나눌 수 있어요)");
+      ok.disabled = sum !== b.amount;
+    }
+    splitDraft.pieces.forEach(function (p, i) {
+      var inp = h("input", { type: "number", id: "splitAmt" + i, min: "0", step: "1", value: String(p.amount), inputmode: "numeric", "aria-label": fmtDate(p.date) + " 분량" });
+      inp.addEventListener("input", function () {
+        var v = parseInt(inp.value, 10);
+        p.amount = v > 0 ? v : 0;
+        refresh();
+      });
+      rows.appendChild(h("div", { class: "split-row" }, [h("span", { text: fmtDate(p.date) }), inp, h("span", { class: "u", text: unit })]));
     });
+    ok.addEventListener("click", function () {
+      var r = S.applySplit(state.plan.blocks, b.id, splitDraft.pieces);
+      if (!r.ok) return;
+      state.plan.blocks = r.blocks;
+      openPanel = null; splitDraft = null;
+      save();
+      renderPlan();
+    });
+    no.addEventListener("click", function () { openPanel = null; splitDraft = null; renderPlan(); });
+    refresh();
+    return h("div", { class: "panel" }, [
+      h("p", { class: "small-label", text: "남은 날짜에 이렇게 나눠요. 고칠 수 있어요." }),
+      rows, sumEl, h("div", { class: "btns" }, [ok, no])
+    ]);
   }
 
   function onReset() {
@@ -612,16 +637,13 @@
       wipe();
       state = emptyState();
       storageOk = true;
+      openPanel = null; splitDraft = null;
+      cals.pv.month = cals.pl.month = null; cals.pv.sel = cals.pl.sel = null;
       showNotice("");
       $("taskText").value = "";
       renderInput();
       show("input");
     });
-  }
-
-  function onCompareBack() {
-    if (compareSource === "plan") { renderPlan(); show("plan"); }
-    else { renderInput(); show("input"); }
   }
 
   // ---------- 시작 ----------
@@ -630,26 +652,30 @@
     if (saved) state = saved;
     if (!storageOk) showNotice("이 브라우저에서는 저장되지 않아요");
 
+    mountCalendar("pv", $("pvCal"));
+    mountCalendar("pl", $("plCal"));
+
     $("addBtn").addEventListener("click", addFromText);
     $("taskText").addEventListener("input", updateSubmit);
     $("finalDeadline").addEventListener("input", function () { readSettings(); updateSubmit(); save(); });
-    $("weekdayMin").addEventListener("change", saveDraft);
-    $("weekendMin").addEventListener("change", saveDraft);
     $("submitBtn").addEventListener("click", onSubmit);
-    $("compareBack").addEventListener("click", onCompareBack);
-    $("missBtn").addEventListener("click", onMiss);
-    $("switchBtn").addEventListener("click", onSwitch);
+    $("confirmBtn").addEventListener("click", onConfirm);
+    $("pvBack").addEventListener("click", onPreviewBack);
     $("resetBtn").addEventListener("click", onReset);
-    $("viewList").addEventListener("click", function () { view = "list"; renderPlan(); });
-    $("viewCal").addEventListener("click", function () {
-      view = "cal"; selDate = selDate || todayStr(); calMonth = selDate.slice(0, 7); renderPlan();
-    });
-    $("calPrev").addEventListener("click", function () { moveMonth(-1); });
-    $("calNext").addEventListener("click", function () { moveMonth(1); });
 
-    if (state.plan && state.settings) {
+    var plan = state.plan;
+    if (plan && state.settings && plan.status === "confirmed") {
       renderPlan();
       show("plan");
+    } else if (plan && state.settings && plan.status === "draft") {
+      var today = todayStr();
+      if (plan.blocks.some(function (b) { return b.date < today; })) {
+        state.plan = S.buildPlan(state.tasks, state.settings, today);
+        save();
+        showNotice("날짜가 바뀌어서 일정을 다시 나눴어요");
+      }
+      renderPreview();
+      show("preview");
     } else {
       renderInput();
       show("input");
